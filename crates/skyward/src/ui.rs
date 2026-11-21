@@ -70,9 +70,11 @@ const TOUCH_WAIT: Duration = Duration::from_secs(5);
 const REST: Duration = Duration::from_secs(5);
 
 /// Where logs saved to the temporary folder go, in the recovery service's
-/// own folder, and where in internal storage the others do.
+/// own folder, where in internal storage the others do, and where on the
+/// data partition those go that need no user's credential.
 const TMP_LOGS: &str = "/skyward/run/logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
+const DE_LOGS: &str = "/data/skyward/logs";
 
 /// The folder of internal storage the system saves its own screenshots in,
 /// which the gallery shows as its screenshots, and where in the recovery
@@ -2659,10 +2661,11 @@ impl Pages<'_> {
             Effect::StopSkywardUpdate => self.skyward_updater.as_ref().context("Skyward is not being updated")?.stop(),
             // Logs that cannot be saved are the page's to report;
             // the recovery carries on.
-            Effect::ExportLogs { recovery, kernel, storage } => {
-                let into = match storage {
-                    true => Path::new(skyward_crypto::data::SDCARD).join(STORAGE_LOGS),
-                    false => PathBuf::from(TMP_LOGS),
+            Effect::ExportLogs { recovery, kernel, place } => {
+                let into = match place {
+                    1 => Path::new(skyward_crypto::data::SDCARD).join(STORAGE_LOGS),
+                    2 => PathBuf::from(DE_LOGS),
+                    _ => PathBuf::from(TMP_LOGS),
                 };
                 match export_logs(recovery, kernel, &into, self.app.state.time_zone) {
                     Ok(folder) => self.app.report(&skyward_ui::fmt::exported(self.app.state.lang, &folder.display().to_string()), now),

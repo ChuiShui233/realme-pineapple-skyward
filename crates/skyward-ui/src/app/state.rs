@@ -75,7 +75,7 @@ pub struct State {
     /// Which logs to export: the recovery's, the kernel's.
     pub logs: [bool; 2],
     /// Where the logs go: 0 for the temporary folder, 1 for internal
-    /// storage.
+    /// storage, 2 for the data partition's device-encrypted area.
     pub logs_to: usize,
     /// What the phone's boot control holds of the slots, as the runtime
     /// last read it for the slot or reboot page, or why it could not.

@@ -22,7 +22,7 @@ const USB_DRIVE: &str = "usb_drive";
 /// The logs exported, and where they go, by name, in the order of the page
 /// that exports them.
 const LOGS: [&str; 2] = ["recovery", "kernel"];
-const LOG_PLACES: [&str; 2] = ["temporary", "storage"];
+const LOG_PLACES: [&str; 3] = ["temporary", "storage", "data"];
 
 /// The settings as they are kept. A value missing is the one a recovery
 /// starts with, and one this version does not know is left out.

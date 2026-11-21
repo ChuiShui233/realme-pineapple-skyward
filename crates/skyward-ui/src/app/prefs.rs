@@ -221,15 +221,21 @@ mod tests {
     fn logs_are_exported_as_ticked_where_they_can_go() {
         let (f, i) = (fonts(), info());
         let mut app = App::new(Screen::Logs, W, H, PPD);
-        let both = Effect::ExportLogs { recovery: true, kernel: true, storage: false };
+        let both = Effect::ExportLogs { recovery: true, kernel: true, place: 0 };
         assert_eq!(tap(&mut app, &f, &i, Action::ExportLogs), vec![both], "both, to the temporary folder, at first");
         tap(&mut app, &f, &i, Action::LogPart(0));
         tap(&mut app, &f, &i, Action::LogsTo(1));
         assert!(tap(&mut app, &f, &i, Action::ExportLogs).is_empty(), "internal storage waits for the data partition");
         app.tick(1000);
         assert_eq!(app.deadline(1000), Some(TOAST_MS), "and says so");
+        // The DE area needs only the partition mounted, not the owner's files.
+        tap(&mut app, &f, &i, Action::LogsTo(2));
+        assert!(tap(&mut app, &f, &i, Action::ExportLogs).is_empty(), "the DE area waits for the data partition to open");
+        app.state.data = Data::Opening;
+        assert_eq!(tap(&mut app, &f, &i, Action::ExportLogs), vec![Effect::ExportLogs { recovery: false, kernel: true, place: 2 }], "DE area needs no credential");
         app.data_waiting(None);
-        assert_eq!(tap(&mut app, &f, &i, Action::ExportLogs), vec![Effect::ExportLogs { recovery: false, kernel: true, storage: true }]);
+        tap(&mut app, &f, &i, Action::LogsTo(1));
+        assert_eq!(tap(&mut app, &f, &i, Action::ExportLogs), vec![Effect::ExportLogs { recovery: false, kernel: true, place: 1 }]);
         tap(&mut app, &f, &i, Action::LogPart(1));
         assert!(tap(&mut app, &f, &i, Action::ExportLogs).is_empty(), "nothing ticked, nothing saved");
     }

@@ -286,13 +286,15 @@ impl App {
                 self.refresh();
             }
             Action::ExportLogs => {
-                let ([recovery, kernel], storage) = (self.state.logs, self.state.logs_to == 1);
+                let ([recovery, kernel], place) = (self.state.logs, self.state.logs_to as u8);
                 if !recovery && !kernel {
                     self.say(l.pick(["请选择要导出的日志", "請選擇要匯出的記錄", "Choose the logs to export"]), now);
-                } else if storage && !self.state.data.storage_open() {
+                } else if place == 1 && !self.state.data.storage_open() {
                     self.say(l.pick(DECRYPT_FIRST), now);
+                } else if place == 2 && !self.state.data.de_open() {
+                    self.say(l.pick(DATA_NOT_OPEN), now);
                 } else {
-                    return vec![Effect::ExportLogs { recovery, kernel, storage }];
+                    return vec![Effect::ExportLogs { recovery, kernel, place }];
                 }
             }
             Action::PickSlot(slot) => {

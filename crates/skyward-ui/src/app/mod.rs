@@ -544,9 +544,10 @@ pub enum Effect {
     /// reset, which tells as erasing tells.
     Filesystem { name: String, action: FsAction },
     /// Save the logs chosen, the recovery's own and the kernel's, into a
-    /// folder of their own in internal storage or the temporary folder,
-    /// saying where with [`App::report`].
-    ExportLogs { recovery: bool, kernel: bool, storage: bool },
+    /// folder of their own, saying where with [`App::report`]. `place` is
+    /// 0 for the temporary folder, 1 for internal storage, 2 for the
+    /// data partition's device-encrypted area.
+    ExportLogs { recovery: bool, kernel: bool, place: u8 },
     /// Back up the parts ticked, by their place in [`BACKUP_PARTS`], into
     /// a folder of their own in `place`, telling how it goes with
     /// [`App::backup_started`], [`App::backup_plan`], [`App::backup_at`]

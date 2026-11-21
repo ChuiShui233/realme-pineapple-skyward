@@ -14,6 +14,9 @@ pub const DATA_ERASED: Text = ["data 分区已清除", "data 分割區已清除"
 /// decrypted.
 pub const DECRYPT_FIRST: Text = ["请先完成「解密」", "請先完成「解密」", "Decrypt first"];
 
+/// What work on the data partition is told before it is opened at all.
+pub const DATA_NOT_OPEN: Text = ["请先打开 data 分区", "請先開啟 data 分割區", "Open the data partition first"];
+
 /// Which control answers a user's screen lock, by the kind of lock it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keys {
@@ -52,6 +55,17 @@ impl Data {
             // The owner is user 0.
             Data::Locked { user, .. } => *user != 0,
             _ => false,
+        }
+    }
+
+    /// Whether the data partition is mounted as far as the device-encrypted
+    /// area goes, which needs no user's credential. True while it is opening,
+    /// once it is open, and while any user's files still wait on a lock; false
+    /// only when it is not opened, failed, or was erased.
+    pub fn de_open(&self) -> bool {
+        match self {
+            Data::Closed | Data::Failed(_) | Data::Erased => false,
+            _ => true,
         }
     }
 }
