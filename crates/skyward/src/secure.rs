@@ -2,7 +2,7 @@
 //! recovery: the libraries their partitions were built against, and a
 //! service directory that knows the phone describes them.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -235,11 +235,25 @@ pub fn publish_descriptions(wanted: &[String]) -> Result<()> {
     // since.
     let binder = skyward_binder::driver::Binder::open()?;
     // The first it does not know described settles that it starts again.
+    // A directory that will not answer the question at all is left as it is:
+    // some builds ship a directory whose method numbering differs from the
+    // one this recovery was built as, and the transact then fails instead
+    // of answering. The descriptions were written above, and the programs
+    // register with it after this, so an unanswerable query is no reason to
+    // restart the directory or, worse, to end the whole bring-up — the
+    // phone's key services and the programs using them come after this.
     let mut unknown = false;
     for name in wanted {
-        if !skyward_binder::service::declared(&binder, name).with_context(|| format!("ask the service directory whether it knows {name} described"))? {
-            unknown = true;
-            break;
+        match skyward_binder::service::declared(&binder, name) {
+            Ok(true) => {}
+            Ok(false) => {
+                unknown = true;
+                break;
+            }
+            Err(e) => {
+                skyward_sys::kmsg(&format!("cannot ask the service directory whether it knows {name}: {e}; leaving it as it is"))?;
+                break;
+            }
         }
     }
     if unknown || rewritten > 0 {
@@ -284,21 +298,64 @@ fn registered() -> Result<Vec<(String, String)>> {
 /// the service last started; stopping it and starting it does not.
 fn register_again(registered: &[(String, String)]) -> Result<()> {
     let services: BTreeSet<&str> = registered.iter().map(|(_, service)| service.as_str()).collect();
+    // On a fresh boot init may be managing one of these services itself and
+    // refuse to let a recovery start it again. That service is already being
+    // looked after, so leave it to init and carry on with the rest. Only give
+    // up when init refuses every one of them, which means the directory
+    // cannot be restored at all.
+    let mut restartable = BTreeSet::new();
     for service in &services {
-        skyward_sys::set_prop("ctl.stop", service).with_context(|| format!("have init stop {service}"))?;
+        match skyward_sys::set_prop("ctl.stop", service) {
+            Ok(()) => {
+                restartable.insert(*service);
+            }
+            Err(e) => {
+                skyward_sys::kmsg(&format!("init will not stop {service} to register it again: {e:#}; leaving it alone"))?;
+            }
+        }
     }
-    for service in &services {
-        skyward_sys::wait_prop(&format!("init.svc.{service}"), "stopped", STOP_TIMEOUT)?;
-        skyward_sys::set_prop("ctl.start", service).with_context(|| format!("have init start {service} again"))?;
+    let mut refused = Vec::new();
+    for service in &restartable {
+        if let Err(e) = skyward_sys::wait_prop(&format!("init.svc.{service}"), "stopped", STOP_TIMEOUT)
+            .and_then(|_| skyward_sys::set_prop("ctl.start", service))
+        {
+            skyward_sys::kmsg(&format!("init will not start {service} again: {e:#}; leaving it alone"))?;
+            refused.push(*service);
+        }
+    }
+    for service in refused {
+        restartable.remove(service);
+    }
+    if restartable.is_empty() {
+        return Ok(());
     }
     let binder = skyward_binder::driver::Binder::open()?;
     let until = Instant::now() + REGISTER_TIMEOUT;
     for (name, service) in registered {
-        while skyward_binder::service::find(&binder, name)?.is_none() {
-            ensure!(Instant::now() < until, "{name} has not registered again since init started {service} again");
+        if !restartable.contains(service.as_str()) {
+            // init is looking after this one; it registers on its own.
+            continue;
+        }
+        let mut back = false;
+        while Instant::now() < until {
+            if skyward_binder::service::find(&binder, name)?.is_some() {
+                back = true;
+                break;
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
-        skyward_sys::kmsg(&format!("{name} registered again from {service}"))?;
+        if back {
+            skyward_sys::kmsg(&format!("{name} registered again from {service}"))?;
+        } else {
+            // A service that stays away is its own trouble. On a fresh boot
+            // some are still init's, or need libraries mounted later; the
+            // key chain started after this brings up the ones that matter.
+            // None of these may stop that chain from being started at all.
+            skyward_sys::kmsg(&format!(
+                "{name} has not registered again within {} seconds since init started {service} again; going on without it",
+                REGISTER_TIMEOUT.as_secs()
+            ))?;
+        }
     }
     Ok(())
 }

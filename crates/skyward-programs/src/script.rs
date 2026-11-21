@@ -156,6 +156,13 @@ fn lines(text: &str) -> Result<Vec<(usize, Vec<String>)>> {
             '#' if word.is_none() => {
                 while chars.next_if(|&c| c != '\n').is_some() {}
             }
+            // The scripts OPPO and realme ship comment with `//` where init's
+            // own use `#`, as android.hardware.contexthub-service.qmi.rc
+            // begins with "//move". Only one that starts a line is a comment:
+            // inside a word `//` is part of it, as in an address.
+            '/' if word.is_none() && words.is_empty() && chars.peek() == Some(&'/') => {
+                while chars.next_if(|&c| c != '\n').is_some() {}
+            }
             '"' => {
                 let quoted = word.get_or_insert_with(String::new);
                 loop {

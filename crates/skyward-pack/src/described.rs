@@ -8,16 +8,15 @@
 //!
 //! A partition is several gigabytes and these files a megabyte of it, so
 //! the partition is not taken out whole: its filesystem is read where it
-//! lies in the package on its server, and only the parts of the package
-//! that hold what is read are downloaded, each checked against the
-//! package's own sum of it.
+//! lies in the package, and only the parts of the package that hold what is
+//! read are fetched, each checked against the package's own sum of it.
 
 use anyhow::{bail, ensure, Context, Result};
 use fs_erofs::{FileType, Filesystem, Inode};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use unpayload::{ImageOptions, PartitionImage, Payload, ReadAt};
+use unpayload::{ImageOptions, PartitionImage, ReadAt};
 
 /// What is taken out of each where it has it: the init scripts and the
 /// service descriptions, each a folder taken whole, the accounts its
@@ -53,7 +52,7 @@ impl fs_core::BlockRead for Partition {
 /// `partitions` is written as an empty file where the partition has it:
 /// that it is there is all the recovery asks of it before it starts it.
 pub fn take(package: &str, partitions: &[String], out: &Path) -> Result<()> {
-    let payload = Payload::open_url(package).with_context(|| format!("open {package}"))?;
+    let payload = crate::open_payload(package)?;
     let mut read = Vec::new();
     for name in partitions {
         let to = out.join(name);

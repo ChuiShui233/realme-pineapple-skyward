@@ -1543,6 +1543,7 @@ fn nezha(cfg: &DeviceConfig) -> DeviceInfo {
         screen: cfg.display.diagonal,
         os_version: Some("OS4.0.4.0.XPACNXM".into()),
         android: Some("17".into()),
+        porter: cfg.device.porter.clone(),
         locale: Some("zh-CN".into()),
         security_patch: Some(PatchLevel { year: 2026, month: 10, day: 1 }),
         kernel: "6.12.69-android16-6-g43b5ab7e247d-abogki561813157-4k".into(),

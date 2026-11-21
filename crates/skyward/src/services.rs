@@ -45,6 +45,22 @@ const WAITING_CALLERS: libc::c_int = 1 << 30;
 /// from.
 const LIBRARY_PATH: &str = "LD_LIBRARY_PATH";
 
+/// The folders Android's linker config gives a program on the vendor or the
+/// odm partition that its own script may not name. A vendor HAL can link a
+/// library from another vendor folder (the secure element service needs
+/// /vendor/lib64/hw/libEseUtils.so) or from the installed system the
+/// recovery mounts at /mnt/system (libdmabufheap.so lives in the system's
+/// own /lib64 there, not at /mnt/system/lib64). They are searched after the
+/// program's own, and only where they are there.
+const VENDOR_EXTRA_LIBRARIES: [&str; 6] = [
+    "/vendor/lib64",
+    "/vendor/lib64/hw",
+    "/odm/lib64",
+    "/odm/lib64/hw",
+    "/mnt/system/system/lib64",
+    "/mnt/system/system/lib64/bootstrap",
+];
+
 /// Keep each program running, one thread per program: start it, and start
 /// it again whenever it exits. They are started in the order they are
 /// given, and one that says what it will be ready with holds up those
@@ -398,6 +414,17 @@ fn command(s: &Service, who: &Credentials, given: &Given, handed: &[(String, Own
             true => libraries.push(value.clone()),
             false => {
                 cmd.env(name, value);
+            }
+        }
+    }
+    // A program on the phone's own partitions may need what Android's
+    // linker config gives it beyond the folders its script names; each is
+    // added only where it is there, so a phone without it keeps the path
+    // it had.
+    if s.path.starts_with("/vendor/") || s.path.starts_with("/odm/") {
+        for dir in VENDOR_EXTRA_LIBRARIES {
+            if Path::new(dir).is_dir() {
+                libraries.push(dir.to_string());
             }
         }
     }

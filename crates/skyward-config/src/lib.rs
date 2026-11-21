@@ -93,7 +93,8 @@ pub struct DeviceConfig {
 pub struct Stock {
     /// The build's version, such as OS4.0.4.0.XPACNXM.
     pub version: String,
-    /// Where the package is downloaded from, over HTTPS.
+    /// Where the package is taken from: its HTTPS address on the maker's
+    /// server, or an absolute path to the local zip archive that holds it.
     pub package: String,
     /// The recovery partition's SHA-256, in lowercase hex.
     pub recovery: String,
@@ -214,6 +215,11 @@ pub struct Haptics {
     /// The file the driver says the motor's resonant frequency in, in
     /// tenths of a hertz whatever its label.
     pub resonance: String,
+    /// A file the driver says the motor's resonant period in, in
+    /// microseconds, on phones whose `resonance` reads 0 until the driver
+    /// is calibrated: the frequency is then one period's worth of hertz.
+    #[serde(default)]
+    pub period: Option<String>,
     pub strength: Strength,
 }
 
@@ -268,9 +274,34 @@ pub struct Device {
     /// SoC marketing name shown on the About page.
     #[serde(default)]
     pub soc: Option<Names>,
+    /// The SoC's top frequency in kHz, shown on the specs page instead of
+    /// what `cpuinfo_max_freq` reports, on phones whose driver reports a
+    /// wrong value in recovery.
+    #[serde(default)]
+    pub cpu_max_khz: Option<u32>,
+    /// The porter's name, shown on the About page under the Android
+    /// version; `None` shows no line.
+    #[serde(default)]
+    pub porter: Option<String>,
     /// System property that carries the vendor OS version.
     #[serde(default = "default_os_version_prop")]
     pub os_version_prop: String,
+    /// System property the update page reads the phone's name of itself
+    /// from: `ro.product.mod_device` on a Xiaomi, which realme leaves out,
+    /// and the property a phone whose maker names it otherwise has in its
+    /// place.
+    #[serde(default = "default_mod_device_prop")]
+    pub mod_device_prop: String,
+    /// What is written once the phone's firmware is mounted and its modules
+    /// are loaded, each value to its file in the order it is written, such
+    /// as what restarts an ADSP whose power supply appears only then.
+    #[serde(default)]
+    pub writes: Vec<Write>,
+    /// How long to wait for `/sys/class/power_supply/battery` after the
+    /// writes above; `None` waits not at all, so a phone that names no
+    /// writes loses no time.
+    #[serde(default)]
+    pub battery_wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -288,6 +319,12 @@ pub struct Display {
     /// sliding over another rounds its leading corners to it.
     #[serde(default)]
     pub corner_radius: u32,
+    /// The brightness the panel starts at, as a percentage of its normal
+    /// maximum — the slider's top, below the high brightness mode the stock
+    /// system keeps for sunlight. `None` leaves what the bootloader left
+    /// until the slider first sets it.
+    #[serde(default)]
+    pub brightness: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -342,6 +379,10 @@ pub struct Service {
     /// Directories for LD_LIBRARY_PATH, searched in order.
     #[serde(default)]
     pub libraries: Vec<String>,
+    /// What init sets in the program's environment besides its library
+    /// path, as its rc file's `setenv` lines name them.
+    #[serde(default)]
+    pub environment: Vec<(String, String)>,
     /// The program runs once, to its end, as a service of init's marked
     /// oneshot does: it is not started again, the programs after it start
     /// once it has ended, and it has to end well.
@@ -468,6 +509,10 @@ fn default_os_version_prop() -> String {
     "ro.build.display.id".into()
 }
 
+fn default_mod_device_prop() -> String {
+    "ro.product.mod_device".into()
+}
+
 fn default_module_sources() -> Vec<String> {
     vec!["vendor_boot".into(), "vendor_dlkm".into(), "vendor".into()]
 }
@@ -488,6 +533,32 @@ pub fn codename(text: &str) -> Result<String> {
     Ok(named.device.codename)
 }
 
+/// Whether a path in a device configuration is absolute the way the
+/// phone's kernel takes it: it starts at the root `/`, its first step is
+/// no drive such as `C:`, and no step is `..`. The host's
+/// `Path::is_absolute` only knows the host's own rules — on Windows
+/// `/data` is not absolute — so the phone's paths are judged on their own
+/// string.
+fn is_posix_absolute(path: &str) -> bool {
+    let drive = |first: &str| {
+        first.len() == 2 && first.as_bytes()[1] == b':' && first.as_bytes()[0].is_ascii_alphabetic()
+    };
+    path.starts_with('/')
+        && !path[1..].split('/').next().is_some_and(drive)
+        && !path.split('/').any(|step| step == "..")
+}
+
+/// Whether a package's name is absolute here, or else on the computer whose
+/// folder holds it: `C:/…` names a file on a Windows computer whichever
+/// machine reads the configuration, and the phone reads it too, naming no
+/// package of its own.
+fn is_absolute_here_or_on_a_computer(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let of_a_computer =
+        bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'/' || bytes[2] == b'\\');
+    is_posix_absolute(path) || of_a_computer
+}
+
 impl DeviceConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let p = path.as_ref();
@@ -498,11 +569,43 @@ impl DeviceConfig {
 
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: DeviceConfig = toml::from_str(text).context("parse device config")?;
+        ensure!(
+            !cfg.device.mod_device_prop.is_empty() && !cfg.device.mod_device_prop.contains(char::is_whitespace),
+            "[device] mod_device_prop: {:?} is not a system property's name",
+            cfg.device.mod_device_prop
+        );
+        if let Some(porter) = &cfg.device.porter {
+            ensure!(
+                !porter.is_empty() && porter.trim() == porter.as_str(),
+                "[device] porter: {porter:?} is empty or carries leading or trailing whitespace"
+            );
+        }
+        for write in &cfg.device.writes {
+            let path = Path::new(&write.path);
+            let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
+            ensure!(
+                is_posix_absolute(&write.path) && plain && path.file_name().is_some(),
+                "[device] writes: {} is not an absolute path to a file",
+                write.path
+            );
+            ensure!(
+                !write.value.is_empty() && !write.value.contains(['\r', '\n']),
+                "[device] writes: {:?} is not a value to write to {}",
+                write.value,
+                write.path
+            );
+        }
+        if let Some(secs) = cfg.device.battery_wait_seconds {
+            ensure!(
+                (1..=30).contains(&secs),
+                "[device] battery_wait_seconds: {secs} is not a wait of 1 to 30 seconds"
+            );
+        }
         for log in &cfg.wipe.logs {
             let path = Path::new(log);
             let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
             ensure!(
-                path.is_absolute() && plain && path.starts_with(DATA) && path != Path::new(DATA),
+                is_posix_absolute(log) && plain && path.starts_with(DATA) && path != Path::new(DATA),
                 "[wipe] logs: {log} is not a folder inside {DATA}"
             );
         }
@@ -538,9 +641,15 @@ impl DeviceConfig {
             let plain = path.components().all(|c| matches!(c, std::path::Component::Normal(_)));
             ensure!(plain && !folder.is_empty(), "[backup] data_skipped: {folder} is not a path from the top of {DATA}");
         }
+        if let Some(brightness) = cfg.display.brightness {
+            ensure!(brightness <= 100, "[display] brightness: {brightness} is not a percentage from 0 to 100");
+        }
         if let Some(haptics) = &cfg.haptics {
             let file = &haptics.resonance;
-            ensure!(Path::new(file).is_absolute(), "[haptics] resonance: {file} is not an absolute path");
+            ensure!(is_posix_absolute(file), "[haptics] resonance: {file} is not an absolute path");
+            if let Some(period) = &haptics.period {
+                ensure!(is_posix_absolute(period), "[haptics] period: {period} is not an absolute path");
+            }
             let Strength { lightest, strongest } = haptics.strength;
             ensure!(
                 0.0 < lightest && lightest < strongest && strongest <= 1.0,
@@ -551,7 +660,7 @@ impl DeviceConfig {
             for library in &logd.libraries {
                 let path = Path::new(library);
                 let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
-                ensure!(path.is_absolute() && plain && path.file_name().is_some(), "[logd] libraries: {library} is not an absolute path to a file");
+                ensure!(is_posix_absolute(library) && plain && path.file_name().is_some(), "[logd] libraries: {library} is not an absolute path to a file");
             }
         }
         for owners in &cfg.owners {
@@ -563,17 +672,32 @@ impl DeviceConfig {
             for file in &owners.paths {
                 let path = Path::new(file);
                 let plain = path.components().all(|c| matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)));
-                ensure!(path.is_absolute() && plain && path.file_name().is_some(), "[[owners]] paths: {file} is not an absolute path to a file");
+                ensure!(is_posix_absolute(file) && plain && path.file_name().is_some(), "[[owners]] paths: {file} is not an absolute path to a file");
             }
         }
         if let Some(stock) = &cfg.stock {
-            let name = stock.package.rsplit('/').next().unwrap_or_default();
-            ensure!(
-                stock.package.starts_with("https://") && name.ends_with(".zip") && name.contains(&stock.version) && !stock.version.is_empty(),
-                "[stock] package: {} is not an HTTPS address of the full package of {}",
-                stock.package,
-                stock.version
-            );
+            let name = Path::new(&stock.package).file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            if stock.package.starts_with("https://") {
+                ensure!(
+                    name.ends_with(".zip") && name.contains(&stock.version) && !stock.version.is_empty(),
+                    "[stock] package: {} is not an HTTPS address of the full package of {}",
+                    stock.package,
+                    stock.version
+                );
+            } else {
+                // The local package is a file on the host the packer runs
+                // on, so the host's own idea of absolute (C:/… on Windows,
+                // /… on Linux) is the one that names it. The phone reads the
+                // same configuration and names no package of its own, so a
+                // host path it could not resolve is still a whole package's
+                // name to it, and is left alone here.
+                ensure!(
+                    is_absolute_here_or_on_a_computer(&stock.package) && name.ends_with(".zip") && name.contains(&stock.version) && !stock.version.is_empty(),
+                    "[stock] package: {} is neither an HTTPS address nor an absolute path to the full package of {}; write https://…/<version>….zip, or an absolute local path like C:/…/<version>….zip (in TOML a backslash is \\\\)",
+                    stock.package,
+                    stock.version
+                );
+            }
             ensure!(
                 stock.recovery.len() == 64 && stock.recovery.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
                 "[stock] recovery: {} is not a SHA-256 in lowercase hex",
@@ -596,7 +720,7 @@ impl DeviceConfig {
                         );
                         ensure!(plain && !file.path.is_empty(), "[wlan] firmware: {} is not a path from the top of {partition}", file.path);
                     }
-                    None => ensure!(path.is_absolute(), "[wlan] firmware: {} is not an absolute path", file.path),
+                    None => ensure!(is_posix_absolute(&file.path), "[wlan] firmware: {} is not an absolute path", file.path),
                 }
             }
         }
@@ -622,10 +746,37 @@ mod tests {
         assert_eq!(cfg.device.codename, "nezha");
         assert!(cfg.device.ab);
         assert_eq!(cfg.device.os_version_prop, "ro.build.display.id");
+        assert_eq!(cfg.device.mod_device_prop, "ro.product.mod_device");
+        assert_eq!(cfg.device.porter, None, "a phone may name no porter");
+        assert!(cfg.device.writes.is_empty() && cfg.device.battery_wait_seconds.is_none(), "a phone may need no writes and no battery wait");
         assert_eq!(cfg.modules.sources, default_module_sources());
         assert!(cfg.modules.load.is_empty());
         assert_eq!((cfg.firmware, cfg.wlan, cfg.update), (None, None, None), "a phone may have none of them");
         assert_eq!(cfg.logd, None, "a recovery's own logd usually has all it needs");
+    }
+
+    #[test]
+    fn the_update_pages_device_property_defaults_and_is_named_plainly() {
+        let cfg = DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap();
+        assert_eq!(cfg.device.mod_device_prop, "ro.product.mod_device", "a Xiaomi needs no field of its own");
+        let named = DeviceConfig::parse("[device]\ncodename = \"x\"\nmod_device_prop = \"ro.product.model\"\n").unwrap();
+        assert_eq!(named.device.mod_device_prop, "ro.product.model");
+        for bad in ["", " ro.product.model", "ro.product model"] {
+            let text = format!("[device]\ncodename = \"x\"\nmod_device_prop = \"{bad}\"\n");
+            assert!(DeviceConfig::parse(&text).is_err(), "{bad:?} is refused");
+        }
+    }
+
+    #[test]
+    fn a_porter_is_named_plainly_and_may_stay_out() {
+        let none = DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap();
+        assert_eq!(none.device.porter, None, "a phone may name no porter");
+        let named = DeviceConfig::parse("[device]\ncodename = \"x\"\nporter = \"吹水明月\"\n").unwrap();
+        assert_eq!(named.device.porter.as_deref(), Some("吹水明月"));
+        for bad in ["", " 吹水明月", "吹水明月 ", " 吹水明月 "] {
+            let text = format!("[device]\ncodename = \"x\"\nporter = \"{bad}\"\n");
+            assert!(DeviceConfig::parse(&text).is_err(), "{bad:?} is refused");
+        }
     }
 
     #[test]
@@ -635,6 +786,57 @@ mod tests {
         assert_eq!(logd.libraries, ["/mnt/system/system/lib64/libsysutils.so", "/mnt/system/system/lib64/libcap.so"]);
         let ishtar = DeviceConfig::parse(include_str!("../../../devices/ishtar.toml")).unwrap();
         assert_eq!(ishtar.logd, None, "the 13 Ultra's recovery carries both");
+    }
+
+    #[test]
+    fn a_device_write_is_an_absolute_path_to_a_file_with_a_plain_value() {
+        let base = "[device]\ncodename = \"x\"\n";
+        let one = DeviceConfig::parse(&format!("{base}writes = [{{ path = \"/sys/kernel/boot_adsp/ssr\", value = \"1\" }}]\n")).unwrap();
+        assert_eq!(one.device.writes, [Write { path: "/sys/kernel/boot_adsp/ssr".into(), value: "1".into() }]);
+        assert_eq!(one.device.battery_wait_seconds, None, "no wait unless it is named");
+        for bad in [
+            "writes = [{ path = \"sys/kernel/a\", value = \"1\" }]",
+            "writes = [{ path = \"/sys/kernel/a/../b\", value = \"1\" }]",
+            "writes = [{ path = \"/sys/kernel/a\", value = \"\" }]",
+            "writes = [{ path = \"/sys/kernel/a\", value = \"1\\n\" }]",
+        ] {
+            assert!(DeviceConfig::parse(&format!("{base}{bad}\n")).is_err(), "{bad:?} is refused");
+        }
+        for wait in [0, 31, 1000] {
+            let text = format!("{base}battery_wait_seconds = {wait}\n");
+            assert!(DeviceConfig::parse(&text).is_err(), "{wait} seconds is refused");
+        }
+        for wait in [1, 6, 30] {
+            let text = format!("{base}battery_wait_seconds = {wait}\n");
+            assert_eq!(DeviceConfig::parse(&text).unwrap().device.battery_wait_seconds, Some(wait));
+        }
+    }
+
+    #[test]
+    fn divo_reads_its_device_from_the_property_realme_names_it() {
+        let cfg = DeviceConfig::parse(include_str!("../../../devices/divo.toml")).unwrap();
+        assert_eq!(cfg.device.mod_device_prop, "ro.product.model", "realme leaves ro.product.mod_device out");
+        assert_eq!(cfg.display.brightness, Some(50), "divo names the brightness its recovery starts at");
+        assert_eq!(
+            cfg.device.writes,
+            [Write { path: "/sys/kernel/boot_adsp/ssr".into(), value: "1".into() }],
+            "the ADSP is restarted so its power supply appears, as OrangeFox does"
+        );
+        assert_eq!(cfg.device.battery_wait_seconds, Some(6), "the battery may take the seconds OrangeFox waits");
+    }
+
+    #[test]
+    fn a_starting_brightness_is_a_percentage_of_the_panels_normal_maximum() {
+        let base = "[device]\ncodename = \"x\"\n";
+        assert_eq!(DeviceConfig::parse(base).unwrap().display.brightness, None, "a phone may leave what the bootloader left");
+        for brightness in [0, 1, 50, 100] {
+            let text = format!("{base}[display]\nbrightness = {brightness}\n");
+            assert_eq!(DeviceConfig::parse(&text).unwrap().display.brightness, Some(brightness));
+        }
+        for brightness in [101, 255] {
+            let text = format!("{base}[display]\nbrightness = {brightness}\n");
+            assert!(DeviceConfig::parse(&text).is_err(), "{brightness} is refused");
+        }
     }
 
     #[test]
@@ -815,6 +1017,47 @@ mod tests {
         let other = ok.replace("version = \"OS1.0.1.0", "version = \"OS1.0.2.0");
         assert!(DeviceConfig::parse(&format!("{other}recovery = \"{hash}\"\n")).is_err(), "the package of another build");
         assert_eq!(DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap().stock, None);
+    }
+
+    #[test]
+    fn a_package_on_a_computers_drive_is_absolute_wherever_it_is_read() {
+        // The phone reads the same configuration the packer does, and names
+        // no package of its own, so a drive-letter path must stay whole on it.
+        assert!(is_absolute_here_or_on_a_computer("J:/RMX3800_14.1.0.181(CN01).zip"));
+        assert!(is_absolute_here_or_on_a_computer("C:\\stock\\divo14.1.0.181.zip"));
+        assert!(is_absolute_here_or_on_a_computer("/mnt/stock/divo14.1.0.181.zip"));
+        assert!(!is_absolute_here_or_on_a_computer("stock/divo14.1.0.181.zip"));
+        assert!(!is_absolute_here_or_on_a_computer("J:divo14.1.0.181.zip"));
+    }
+
+    #[test]
+    fn a_stock_build_may_be_a_local_zip_of_the_version() {
+        let version = "OS1.0.1.0.XXXCNXM";
+        let file = if cfg!(windows) { format!("C:/stock/{version}.zip") } else { format!("/stock/{version}.zip") };
+        let hash = "faa425b10231a0cfe2d74ff34f344f032ee2d891ea5e9420bf4e67cd86d622a7";
+        let with = |package: &str| -> String {
+            format!("[device]\ncodename = \"x\"\n[stock]\nversion = \"{version}\"\npackage = \"{package}\"\nrecovery = \"{hash}\"\n")
+        };
+        assert!(DeviceConfig::parse(&with(&file)).is_ok(), "an absolute local path holding the version");
+        let other = with(&file.replace(version, "OS1.0.2.0.XXXCNXM"));
+        assert!(DeviceConfig::parse(&other).is_err(), "a local package of another build");
+        assert!(DeviceConfig::parse(&with(&file.replace(".zip", ".tgz"))).is_err(), "not a zip");
+        assert!(DeviceConfig::parse(&with("stock.zip")).is_err(), "neither an HTTPS address nor an absolute path");
+    }
+
+    #[test]
+    fn every_devices_toml_still_passes_its_checks() {
+        let folder = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../devices"));
+        let mut seen = 0;
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "toml") {
+                let cfg = DeviceConfig::load(&path).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
+                assert!(cfg.stock.is_some(), "{} names its stock build", path.display());
+                seen += 1;
+            }
+        }
+        assert!(seen >= 21, "every devices/*.toml checked: found {seen}, expected at least the 21 already written");
     }
 
     #[test]

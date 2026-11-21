@@ -25,6 +25,7 @@ pub(super) fn info() -> DeviceInfo {
         screen: Some(6.73),
         os_version: None,
         android: None,
+        porter: None,
         locale: None,
         security_patch: None,
         kernel: "5.15.178".into(),

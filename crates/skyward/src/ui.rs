@@ -115,16 +115,30 @@ impl Backlight {
         Ok(Backlight { path: dir.join("brightness"), top, level })
     }
 
-    /// Light the panel at `level` of its normal maximum, or turn it off
-    /// with `None`. The file is written only when the raw level changes.
-    fn show(&mut self, level: Option<f32>) -> Result<()> {
-        let raw = level.map_or(0, |v| ((v.clamp(0.0, 1.0) * self.top as f32).round() as u32).max(1));
+    /// Write `raw` to the panel's backlight file, once it changes.
+    fn write_raw(&mut self, raw: u32) -> Result<()> {
         if raw != self.level {
             fs::write(&self.path, raw.to_string()).with_context(|| format!("write {}", self.path.display()))?;
             eprintln!("backlight {raw}");
             self.level = raw;
         }
         Ok(())
+    }
+
+    /// Light the panel at `level` of its normal maximum, or turn it off
+    /// with `None`. The file is written only when the raw level changes.
+    fn show(&mut self, level: Option<f32>) -> Result<()> {
+        let raw = level.map_or(0, |v| ((v.clamp(0.0, 1.0) * self.top as f32).round() as u32).max(1));
+        self.write_raw(raw)
+    }
+
+    /// Light the panel at `percent` of its normal maximum once at startup,
+    /// as the device config asks: raw = round(percent / 100 × top), where
+    /// `top` is the slider's top — the panel's normal maximum, below the
+    /// high brightness mode the stock system keeps for sunlight.
+    fn start(&mut self, percent: u8) -> Result<()> {
+        let raw = (f64::from(percent) * f64::from(self.top) / 100.0).round() as u32;
+        self.write_raw(raw)
     }
 }
 
@@ -136,11 +150,15 @@ impl Backlight {
 /// 14 and the K80 series and one of the K90's give it only as the level
 /// their factory tests drive the panel to, on the backlight's own scale:
 /// the 13 Ultra's panels give that level as well, and it comes to the same
-/// half of their range as the normal maximum they give.
-const NORMAL_MAX: [(&str, &str); 3] = [
+/// half of their range as the normal maximum they give. The panels of the
+/// phones OPPO and realme make, which run ColorOS, name the normal maximum
+/// `oplus,dsi-bl-normal-max-level` (the GT6's divo panel: 3598 of the 4094
+/// the backlight takes) beside the whole range every Qualcomm panel gives.
+const NORMAL_MAX: [(&str, &str); 4] = [
     ("mi,normal-max-brightness-clone", "mi,max-brightness-clone"),
     ("mi,max-brightness-normal", "qcom,mdss-dsi-bl-max-level"),
     ("mi,mdss-dsi-fac-bl-max-level", "qcom,mdss-dsi-bl-max-level"),
+    ("oplus,dsi-bl-normal-max-level", "qcom,mdss-dsi-bl-max-level"),
 ];
 
 /// The raw backlight level, out of `max`, at the panel's normal maximum.
@@ -1027,7 +1045,7 @@ fn installed(cfg: &DeviceConfig, info: &skyward_info::DeviceInfo) -> Result<Inst
     let props = skyward_info::installed_props(slot)?;
     let prop = |name: &str| props.get(name).cloned().with_context(|| format!("the installed system says no {name}"));
     Ok(Installed {
-        device: prop("ro.product.mod_device")?,
+        device: prop(&cfg.device.mod_device_prop)?,
         version: prop(&cfg.device.os_version_prop)?,
         android: prop("ro.build.version.release")?,
         unlocked: skyward_block::boot_param("androidboot.flash.locked")?.as_deref() == Some("0"),
@@ -1256,7 +1274,7 @@ impl<'a> Pages<'a> {
         let started = Instant::now();
         let control = Control::open()?;
         let haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
-        let backlight = Backlight::open()?;
+        let mut backlight = Backlight::open()?;
         let first = match &request.work {
             Work::Fastboot => Screen::Fastboot,
             Work::PromptWipeData => Screen::CantStart,
@@ -1284,6 +1302,16 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        // The device config names the brightness the panel starts at, as a
+        // percentage of its normal maximum (the slider's top, below the HBM
+        // range). It lights the panel before the first frame and seeds the
+        // slider for it; a brightness the user has kept wins over it.
+        if kept.settings().is_none()
+            && let Some(brightness) = cfg.display.brightness
+        {
+            backlight.start(brightness)?;
+            app.state.brightness = brightness as f32 / 100.0;
+        }
         let keeper = Keeper::new(&kept);
         skyward_sys::kmsg(&format!(
             "the pages speak {:?}, {}, and the locale named is {}",
@@ -2973,7 +3001,12 @@ impl Pages<'_> {
     /// port goes through "none"; then the slot's partitions come up as at
     /// boot.
     fn enter_recovery(&mut self) -> Result<()> {
-        skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)?;
+        let config = skyward_sys::usb::resting();
+        if skyward_sys::usb::can_switch(config) {
+            skyward_sys::usb::switch(config, USB_TIMEOUT)?;
+        } else {
+            skyward_sys::kmsg(&format!("the port cannot take {config}: init has no rules for it; adb stays"))?;
+        }
         let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
         crate::prepare(self.cfg, slot)?;
         self.read_at = Instant::now();
@@ -2991,19 +3024,29 @@ impl Pages<'_> {
     fn file_transfer(&mut self, on: bool, now: u64) -> Result<()> {
         let rests = !self.fastboot && !self.sideloading;
         match (on, self.transfer.take()) {
-            (true, None) => match Transfer::start(self.cfg, &self.info, self.app.state.time_zone) {
-                Ok(t) => {
-                    self.transfer = Some(t);
-                    if rests
-                        && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)
-                    {
-                        skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
-                        self.app.report(&format!("{e:#}"), now);
-                    }
+            (true, None) => {
+                // On a phone whose init has no rules for mtp beside adb the
+                // port must stay adb: start no transfer the port can never
+                // offer, and never write sys.usb.config=none on its behalf.
+                if rests && !skyward_sys::usb::can_switch(skyward_sys::usb::MTP_ADB) {
+                    skyward_sys::kmsg(&format!("the port cannot take file transfer: init has no rules for {}", skyward_sys::usb::MTP_ADB))?;
+                    self.app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(self.app.state.lang, "init has no rules for mtp,adb"), now);
+                    return Ok(());
                 }
-                Err(e) => {
-                    skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
-                    self.app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(self.app.state.lang, &format!("{e:#}")), now);
+                match Transfer::start(self.cfg, &self.info, self.app.state.time_zone) {
+                    Ok(t) => {
+                        self.transfer = Some(t);
+                        if rests
+                            && let Err(e) = skyward_sys::usb::switch(skyward_sys::usb::resting(), USB_TIMEOUT)
+                        {
+                            skyward_sys::kmsg(&format!("the port did not take file transfer: {e:#}"))?;
+                            self.app.report(&format!("{e:#}"), now);
+                        }
+                    }
+                    Err(e) => {
+                        skyward_sys::kmsg(&format!("file transfer did not start: {e:#}"))?;
+                        self.app.file_transfer_failed(false, &skyward_ui::fmt::transfer_failed(self.app.state.lang, &format!("{e:#}")), now);
+                    }
                 }
             },
             (false, Some(t)) => {

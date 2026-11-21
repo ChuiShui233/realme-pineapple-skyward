@@ -15,3 +15,6 @@ NOTES.md
 TODO.md
 *.draft.md
 notes/
+# Python bytecode produced by the phase-1 analysis tools
+__pycache__/
+*.pyc

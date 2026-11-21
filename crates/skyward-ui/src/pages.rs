@@ -545,6 +545,7 @@ const SCREEN_SIZE: Text = ["屏幕尺寸", "螢幕尺寸", "Screen size"];
 const RESOLUTION: Text = ["分辨率", "解析度", "Resolution"];
 const OS_VERSION: Text = ["OS 版本", "OS 版本", "OS version"];
 const ANDROID_VERSION: Text = ["Android 版本", "Android 版本", "Android version"];
+const PORTER: Text = ["移植者", "移植者", "Ported by"];
 const CURRENT_SLOT: Text = ["当前槽位", "目前槽位", "Current slot"];
 const DATA_PART: Text = ["data 分区", "data 分割區", "data partition"];
 
@@ -572,6 +573,9 @@ fn about_cards(cx: &Ctx, c: &mut Canvas) -> (Vec<Hit>, f32, f32) {
     }
     if let Some(r) = &i.android {
         facts.push(Fact { title: l.pick(ANDROID_VERSION), value: r.clone(), link: false });
+    }
+    if let Some(p) = &i.porter {
+        facts.push(Fact { title: l.pick(PORTER), value: p.clone(), link: false });
     }
     let summary = widgets::facts(c, t, f, m.dp(490.7), &facts, &tone);
     out.push(Hit { rect: summary.rows[1], action: Action::Open(Screen::Specs) });
@@ -627,6 +631,9 @@ pub fn specs(cx: &Ctx) -> Frame {
     }
     if let Some(r) = &i.android {
         y = widgets::info_card(&mut c, t, f, y + gap, &[(l.pick(ANDROID_VERSION), fmt::android(l, r, i.security_patch.as_ref()))]);
+    }
+    if let Some(p) = &i.porter {
+        y = widgets::info_card(&mut c, t, f, y + gap, &[(l.pick(PORTER), p.clone())]);
     }
     y = widgets::info_card(&mut c, t, f, y + gap, &[
         (l.pick(["Recovery 版本", "Recovery 版本", "Recovery version"]), format!("Skyward {VERSION}")),

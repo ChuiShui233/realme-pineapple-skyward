@@ -68,15 +68,22 @@ enum Cmd {
         /// The monospaced typeface's licence, which goes with it.
         #[arg(long)]
         mono_license: PathBuf,
+        /// Build on a third-party recovery's ramdisk (one carrying FFiles or
+        /// twres) instead of a stock one. Off by default: a custom ramdisk
+        /// keeps its own init and vendor services, which may not match the
+        /// device's installed system. Only use it when those services are
+        /// the ones the decryption needs and the stock ramdisk lacks them.
+        #[arg(long)]
+        allow_custom_stock: bool,
         #[arg(long)]
         out: PathBuf,
     },
     /// Print the stock build a device's recovery is made on, as lines of
     /// name=value: its version, where its full update package is, and the
     /// SHA-256 of the recovery partition in that package. Given somewhere
-    /// to write it, also take that partition out of the package on its
-    /// server, reading only what the partition takes, and write it there
-    /// once its SHA-256 is that one.
+    /// to write it, also take that partition out of the package, reading
+    /// only what the partition takes, and write it there once its SHA-256
+    /// is that one.
     Stock {
         /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
@@ -86,12 +93,12 @@ enum Cmd {
         out: Option<PathBuf>,
     },
     /// Take what a device's own partitions say of the programs they carry
-    /// out of its stock build's full update package on its server: the
-    /// init scripts, the service descriptions, the accounts and the build
-    /// properties of each partition that carries such programs, written
-    /// under `out` as the partition and then the path in it. Only the
-    /// parts of the package that hold these files are downloaded, each
-    /// checked against the package's own sum of it.
+    /// out of its stock build's full update package: the init scripts, the
+    /// service descriptions, the accounts and the build properties of each
+    /// partition that carries such programs, written under `out` as the
+    /// partition and then the path in it. Only the parts of the package
+    /// that hold these files are fetched, each checked against the
+    /// package's own sum of it.
     Described {
         /// The device configuration, devices/<codename>.toml.
         #[arg(long)]
@@ -125,14 +132,17 @@ fn main() -> Result<()> {
             img.kernel = BootImage::read(&kernel)?.kernel;
             write(&out, &img, &img.to_bytes()?)
         }
-        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, out } => {
+        Cmd::Recovery { stock, binary, system_init, config, font, mono, mono_license, allow_custom_stock, out } => {
             let size = partition_size(&stock)?;
             let mut img = BootImage::read(&stock)?;
             let mut rd = Ramdisk::decode(&img.ramdisk)?;
-            // A stock recovery ramdisk has no third-party tree; refuse to build
-            // on top of another custom recovery.
-            if let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres")) {
-                anyhow::bail!("{} holds {}, which is not a stock recovery", stock.display(), e.name);
+            // A stock recovery ramdisk has no third-party tree. A custom one
+            // is refused unless asked for: its own init and vendor services
+            // may differ from the device's installed system.
+            if !allow_custom_stock
+                && let Some(e) = rd.entries.iter().find(|e| e.name == "FFiles" || e.name.starts_with("twres"))
+            {
+                anyhow::bail!("{} holds {}, which is not a stock recovery; pass --allow-custom-stock to build on it anyway", stock.display(), e.name);
             }
             let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("read {}", p.display()));
             skyward_config::DeviceConfig::load(&config)?;
@@ -142,7 +152,11 @@ fn main() -> Result<()> {
             // until it points here; the recovery binary is each of them.
             let (_, recovery) = paths::RECOVERY.rsplit_once('/').expect("the recovery binary is in a folder");
             for command in paths::COMMANDS {
-                rd.link(command, recovery)?;
+                if allow_custom_stock {
+                    rd.link_over(command, recovery)?;
+                } else {
+                    rd.link(command, recovery)?;
+                }
             }
             rd.add(paths::SYSTEM_INIT, 0o755, read(&system_init)?)?;
             rd.add(paths::CONFIG, 0o644, read(&config)?)?;
@@ -191,15 +205,28 @@ fn main() -> Result<()> {
 /// The partition a recovery is made on, as a full update package names it.
 const RECOVERY: &str = "recovery";
 
-/// Take the recovery partition out of the stock build's full update package
-/// on its server, reading only what that partition takes of it, and write it
-/// to `out` once its SHA-256 is the one the configuration names.
+/// Opens the full update package `package` where it is: its HTTPS address
+/// on the maker's server, or an absolute path to a local zip archive
+/// holding its payload.bin.
+fn open_payload(package: &str) -> Result<unpayload::Payload> {
+    if package.starts_with("https://") {
+        unpayload::Payload::open_url(package).with_context(|| format!("open {package}"))
+    } else {
+        unpayload::Payload::open(package).with_context(|| {
+            format!("open the full update package {package}; give its HTTPS address or an absolute path to its zip file")
+        })
+    }
+}
+
+/// Take the recovery partition out of the stock build's full update package,
+/// reading only what that partition takes of it, and write it to `out` once
+/// its SHA-256 is the one the configuration names.
 fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
     let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
     // Taken out beside where it goes, so it is moved there whole.
     let work = tempfile::Builder::new().prefix(".stock").tempdir_in(parent).with_context(|| format!("make a folder in {}", parent.display()))?;
-    let payload = unpayload::Payload::open_url(&stock.package).with_context(|| format!("open {}", stock.package))?;
+    let payload = open_payload(&stock.package)?;
     let options = unpayload::ExtractOptions { output_dir: work.path().to_path_buf(), partitions: vec![RECOVERY.into()], ..Default::default() };
     let report = |event: unpayload::Event<'_>| match event {
         unpayload::Event::Started { partitions } => {

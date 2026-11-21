@@ -10,8 +10,14 @@ anyhow = { workspace = true }
 roxmltree = "0.21.2"
 skyward-config = { path = "../skyward-config" }
 # The name of the secure element service a phone's weaver may go through,
-# which the recovery serves.
-skyward-omapi = { path = "../skyward-omapi" }
+# which the recovery serves. The host packer reads only the phone's init
+# scripts and service descriptions, so it builds without this phone-side
+# chain (and without skyward-sys below it).
+skyward-omapi = { path = "../skyward-omapi", optional = true }
+
+[features]
+default = ["secure"]
+secure = ["dep:skyward-omapi"]
 
 [dev-dependencies]
 # Looks the accounts the programs run as up as the recovery does on the

@@ -150,8 +150,18 @@ fn layout(extras: &[String]) -> Result<Option<String>> {
 }
 
 /// The size of the kernel's memory pages.
+#[cfg(unix)]
 fn page_size() -> u64 {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+}
+
+/// Windows has no `sysconf`. The host only ever builds the commands the
+/// phone's kernel lays its filesystems out by, and those pages are 4 KiB,
+/// so a host-side `page_size` is the one size the phone's make_f2fs takes
+/// when it is told none.
+#[cfg(not(unix))]
+fn page_size() -> u64 {
+    4096
 }
 
 #[cfg(test)]

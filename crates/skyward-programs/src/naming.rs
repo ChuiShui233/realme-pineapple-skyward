@@ -107,6 +107,7 @@ fn run(phone: &Phone, command: &[String]) -> Result<Started> {
         path: phone.started_from(&program[0]),
         args: program[1..].to_vec(),
         libraries: libraries_of(&program[0], phone.bundle.as_deref()),
+        environment: Vec::new(),
         oneshot: true,
         ready_property: None,
         ready_service: None,

@@ -1,9 +1,13 @@
 use anyhow::{bail, Context, Result};
 use cpio::{NewcBuilder, NewcReader};
+#[cfg(unix)]
 use std::ffi::{CString, OsStr};
+#[cfg(unix)]
 use std::fs;
 use std::io::{Cursor, Read, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -27,9 +31,13 @@ const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
+#[cfg(unix)]
 const S_IFCHR: u32 = 0o020000;
+#[cfg(unix)]
 const S_IFBLK: u32 = 0o060000;
+#[cfg(unix)]
 const S_IFIFO: u32 = 0o010000;
+#[cfg(unix)]
 const S_IFSOCK: u32 = 0o140000;
 
 /// The permissions a stock ramdisk gives its links, such as the commands
@@ -122,6 +130,7 @@ impl Ramdisk {
     /// everything in it is in. Where a file is already there, the entry is
     /// made anew, where the kernel writes over it, so that a program
     /// running from that file is left alone.
+    #[cfg(unix)]
     pub fn unpack(&self, root: &Path) -> Result<()> {
         for e in &self.entries {
             let path = root.join(&e.name);
@@ -132,6 +141,14 @@ impl Ramdisk {
             set_time(&path, e.mtime).with_context(|| format!("unpack {}", path.display()))?;
         }
         Ok(())
+    }
+
+    /// Windows has no device nodes, owners or modes to unpack a ramdisk
+    /// with, and the host packer never unpacks one onto the phone's root;
+    /// the phone's own init does, through the unix `unpack` above.
+    #[cfg(not(unix))]
+    pub fn unpack(&self, _root: &Path) -> Result<()> {
+        bail!("a ramdisk is unpacked only on the phone")
     }
 
     /// Replace a regular file's contents, keeping its owner and mode.
@@ -165,6 +182,20 @@ impl Ramdisk {
         }
     }
 
+    /// Point `name` to `target` even when the ramdisk carries a real file
+    /// there. A third-party recovery ships these commands as its own
+    /// programs rather than as links; building on such a ramdisk replaces
+    /// the file with a link so the recovery answers the command instead.
+    pub fn link_over(&mut self, name: &str, target: &str) -> Result<()> {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.name == name) {
+            e.mode = S_IFLNK | LINK_MODE;
+            e.data = target.as_bytes().to_vec();
+            Ok(())
+        } else {
+            self.insert(name, S_IFLNK | LINK_MODE, target.as_bytes().to_vec())
+        }
+    }
+
     fn insert(&mut self, name: &str, mode: u32, data: Vec<u8>) -> Result<()> {
         if self.find(name).is_some() {
             bail!("{name} is already in the ramdisk");
@@ -192,11 +223,13 @@ fn root_entry(name: &str, mode: u32, data: Vec<u8>) -> Entry {
     Entry { name: name.to_string(), mode, uid: 0, gid: 0, mtime: 0, nlink, dev: (0, 0), rdev: (0, 0), data }
 }
 
+#[cfg(unix)]
 fn c_path(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).context("a NUL in the path")
 }
 
 /// One entry of [`Ramdisk::unpack`] at `path`.
+#[cfg(unix)]
 fn unpack(e: &Entry, path: &Path) -> Result<()> {
     let kind = e.mode & S_IFMT;
     let mode = e.mode & 0o7777;
@@ -243,6 +276,7 @@ fn unpack(e: &Entry, path: &Path) -> Result<()> {
 
 /// Give `path` itself, a link or not, `mtime` as the time it was last
 /// changed and read.
+#[cfg(unix)]
 fn set_time(path: &Path, mtime: u32) -> Result<()> {
     let at = libc::timespec { tv_sec: mtime as libc::time_t, tv_nsec: 0 };
     let times = [at, at];
@@ -293,7 +327,7 @@ fn lz4_tool(input: &[u8]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

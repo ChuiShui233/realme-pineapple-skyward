@@ -1,5 +1,7 @@
+#[cfg(unix)]
 use std::ffi::CString;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -63,6 +65,7 @@ pub struct Space {
 }
 
 /// The room in the filesystem that holds `path`.
+#[cfg(unix)]
 pub fn space(path: &Path) -> io::Result<Space> {
     let s = statvfs(path)?;
     // The counts are 32 bits on some hosts and 64 on the phone.
@@ -71,7 +74,16 @@ pub fn space(path: &Path) -> io::Result<Space> {
     Ok(Space { total: blocks * size, free: free * size, available: available * size })
 }
 
+/// The host packer never mounts the phone's filesystems, so it never asks
+/// how much room one has; only the phone's own programs do, through the
+/// unix `space` above.
+#[cfg(not(unix))]
+pub fn space(_path: &Path) -> io::Result<Space> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "the room in a filesystem is only read on the phone"))
+}
+
 /// What the kernel says of the filesystem that holds `path`.
+#[cfg(unix)]
 fn statvfs(path: &Path) -> io::Result<libc::statvfs> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -517,6 +529,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_filesystems_room_is_all_of_it_what_is_free_and_what_is_left_for_others() {
         let room = space(&std::env::temp_dir()).unwrap();
         assert!(room.total > 0);

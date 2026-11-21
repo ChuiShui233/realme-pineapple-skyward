@@ -20,7 +20,7 @@ rust-fs-erofs = "0.6.0"
 sha2 = "0.10.9"
 skyward-bootimg = { path = "../skyward-bootimg" }
 skyward-config = { path = "../skyward-config" }
-skyward-programs = { path = "../skyward-programs" }
+skyward-programs = { path = "../skyward-programs", default-features = false }
 tempfile = "3.27.0"
 # Takes the stock recovery partition out of a full update package on its
 # server, reading only what that partition takes, and reads the other

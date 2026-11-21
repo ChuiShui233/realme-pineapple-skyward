@@ -1,0 +1,572 @@
+# divo — realme GT6 (RMX3800), the Chinese build's recovery.
+#
+# Every value cites where it was measured: docs/phase1/d-device-evidence.md
+# (the real phone) and docs/phase1/e-firmware-derived.md (the official full
+# package), with docs/phase1/README.md §3.2 as the draft this file settles.
+
+[device]
+# The kernel command line names the project oplusboot.prjname=23631, which
+# the variant script maps to divo (d-device-evidence.md).
+codename = "divo"
+# The official odm build.prop (e-firmware-derived.md).
+brand = "realme"
+model = "realme GT6 (RMX3800)"
+# ota-type=AB; the production code probes androidboot.slot_suffix.
+ab = true
+soc = { hans = "第三代骁龙8移动平台", hant = "Snapdragon 8 Gen 3", en = "Snapdragon 8 Gen 3 Mobile Platform" }
+# The Snapdragon 8 Gen 3's X4 core tops out at 3.30 GHz (3302400 kHz, the
+# value cpuinfo_max_freq settles on). In this recovery the specs page shows
+# 6.60 GHz instead, so pin the known-correct frequency for display.
+cpu_max_khz = 3302400
+# ro.build.display.id is the build baseline (RMX3800_11_A.01), identical
+# across two packages, while ro.build.version.ota is what actually changes
+# with the version and matches the OTA metadata (e-firmware-derived.md §3).
+os_version_prop = "ro.build.version.ota"
+# ro.product.mod_device is empty on realme (d-device-evidence.md §5b). The
+# update page reads the device name from ro.product.model instead, which the
+# official odm build.default.prop sets to RMX3800 (e-firmware-derived.md).
+mod_device_prop = "ro.product.model"
+# Who ported Skyward to this phone, shown on the About page under the
+# Android version.
+porter = "吹水明月"
+# The gauge IC stays asleep until the ADSP that owns it is restarted, as
+# OrangeFox does on pineapple (init.recovery.qcom.rc): once the modules are
+# loaded, write ssr and then wait for the battery to appear.
+writes = [
+    { path = "/sys/kernel/boot_adsp/ssr", value = "1" },
+]
+battery_wait_seconds = 6
+
+[display]
+# The wm size physical value; the system's 1080x2376 is only a user override.
+width = 1264
+height = 2780
+density = 560
+# Marketed diagonal from the official spec sheet; only used for vertical
+# layouts, and not yet confirmed on the phone (d-device-evidence.md).
+diagonal = 6.78
+# DisplayInfo roundedCorners radius (d-device-evidence.md).
+corner_radius = 125
+# The stock init.recovery.qcom.rc writes raw 200 of the panel's 4094 steps
+# (about 5%), and the stock recovery lights the panel itself afterwards.
+# Skyward starts at half the panel's normal maximum
+# (oplus,dsi-bl-normal-max-level 3598, below the HBM range the slider must
+# not reach), so the pages are readable; the slider keeps its top at that
+# normal maximum.
+brightness = 50
+
+[modules]
+# The four partitions the phone keeps its .ko files on, as measured on the
+# stock vendor_boot / super layout (e-firmware-derived.md).
+sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
+# The stock modules.load.recovery verbatim, deduplicated: the stock file
+# holds 401 lines and names smcinvoke_dlkm.ko twice, so 400 entries remain.
+# The 401-line original is G:\tmp\fixed\vb_modules.load.recovery.txt.
+load = [
+    "gh_arm_drv",
+    "sched-walt",
+    "sched-penalty",
+    "qcom_ipc_logging",
+    "oplus_bsp_sched_assist",
+    "oplus_bsp_task_cpustats",
+    "oplus_bsp_task_sched",
+    "oplus_bsp_schedinfo",
+    "oplus_bsp_frame_boost",
+    "oplus_bsp_eas_opt",
+    "oplus_bsp_cpufreq_health",
+    "oplus_bsp_omrg",
+    "cpufreq_bouncing",
+    "cpufreq_uag",
+    "ua_cpu_ioctl",
+    "oplus_bsp_task_overload",
+    "oplus_bsp_mm_osvelte",
+    "qcom-pdc",
+    "phy-qcom-ufs",
+    "phy-qcom-ufs-qmp-v4-pineapple",
+    "phy-qcom-ufs-qrbtc-sdm845",
+    "pinctrl-msm",
+    "pinctrl-pineapple",
+    "pinctrl-cliffs",
+    "pinctrl-volcano",
+    "clk-qcom",
+    "clk-dummy",
+    "gdsc-regulator",
+    "clk-rpmh",
+    "dispcc-pineapple",
+    "gcc-cliffs",
+    "gcc-pineapple",
+    "gcc-volcano",
+    "camcc-cliffs",
+    "camcc-pineapple",
+    "gpucc-pineapple",
+    "videocc-pineapple",
+    "tcsrcc-pineapple",
+    "qcom_aoss",
+    "cmd-db",
+    "crm",
+    "mdt_loader",
+    "qcom_rpmh",
+    "smem",
+    "mem_buf",
+    "mem_buf_dev",
+    "mem_buf_msgq",
+    "secure_buffer",
+    "socinfo",
+    "dcc_v2",
+    "qcom_wdt_core",
+    "memory_dump_v2",
+    "pmic-pon-log",
+    "qcom_cpu_vendor_hooks",
+    "crypto-qti",
+    "hwkm",
+    "tmecom-intf",
+    "gic_intr_routing",
+    "minidump",
+    "gh_cpusys_vm_mem_access",
+    "qcom-pmu-lib",
+    "dcvs_fp",
+    "qcom-dcvs",
+    "qcom_scmi_client",
+    "qcom_cpucp",
+    "debug_symbol",
+    "oplusboot",
+    "oplus_ftm_mode",
+    "oplus_charger_present",
+    "buildvariant",
+    "cdt_integrity",
+    "bootloader_log",
+    "oplus_bsp_boot_projectinfo",
+    "boot_mode",
+    "tango32",
+    "kernel_fb",
+    "olc",
+    "oplus_storage_log",
+    "oplus_uprobe",
+    "device_info",
+    "oplus_mdmrst",
+    "qcom_enhance_watchdog",
+    "oplus_subsys_sleep_monitor",
+    "proxy-consumer",
+    "rpmh-regulator",
+    "stub-regulator",
+    "debug-regulator",
+    "arm_smmu",
+    "msm_dma_iommu_mapping",
+    "qcom_iommu_util",
+    "iommu-logger",
+    "qti-regmap-debugfs",
+    "oplus_procs_load",
+    "qcom-spmi-pmic",
+    "qcom_dma_heaps",
+    "spmi-pmic-arb",
+    "qpnp-power-on",
+    "rtc-pm8xxx",
+    "qcom-reboot-reason",
+    "test-kit",
+    "qcom_tsens",
+    "thermal_pause",
+    "bcl_pmic5",
+    "cpu_hotplug",
+    "thermal_minidump",
+    "qcom-cpufreq-hw",
+    "sdhci-msm",
+    "cqhci",
+    "ufs_qcom",
+    "ufshcd-crypto-qti",
+    "qcom_scmi_vendor",
+    "qcom-scm",
+    "qcom-ipcc",
+    "msm_qmp",
+    "qcom_hwspinlock",
+    "gh_virt_wdt",
+    "gh_dbl",
+    "gh_msgq",
+    "gh_rm_drv",
+    "gunyah_loader",
+    "gunyah_qcom",
+    "qcom_llcc_pmu",
+    "nvmem_qcom-spmi-sdam",
+    "icc-bcm-voter",
+    "icc-rpmh",
+    "qnoc-cliffs",
+    "qnoc-volcano",
+    "qnoc-pineapple",
+    "qnoc-qos",
+    "icc-debug",
+    "icc-test",
+    "qrtr",
+    "qrtr-gunyah",
+    "oplus_mdmfeature",
+    "msm_sysstats",
+    "msm_show_resume_irq",
+    "mhi",
+    "mhi_dev_uci",
+    "mhi_dev_satellite",
+    "phy-qcom-ufs-qmp-v4",
+    "pinctrl-spmi-gpio",
+    "pinctrl-spmi-mpp",
+    "pwm-qti-lpg",
+    "pci-msm-drv",
+    "debugcc-cliffs",
+    "debugcc-pineapple",
+    "gpucc-cliffs",
+    "gpucc-volcano",
+    "videocc-volcano",
+    "bam_dma",
+    "msm_gpi",
+    "qcom_cpuss_sleep_stats",
+    "pcie-pdc",
+    "pdr_interface",
+    "qmi_helpers",
+    "heap_mem_ext_v01",
+    "msm_memshare",
+    "smp2p",
+    "smp2p_sleepstate",
+    "qsee_ipc_irq_bridge",
+    "glink_probe",
+    "pmic_glink",
+    "qti_battery_debug",
+    "charger-ulog-glink",
+    "altmode-glink",
+    "pmic-glink-debug",
+    "qcom_stats",
+    "eud",
+    "llcc-qcom",
+    "llcc_perfmon",
+    "boot_stats",
+    "core_hang_detect",
+    "qcom_va_minidump",
+    "qcom_logbuf_vendor_hooks",
+    "qcom_logbuf_boot_log",
+    "hung_task_enh",
+    "mem-offline",
+    "msm_show_epoch",
+    "gh_tlmm_vm_mem_access",
+    "sps_drv",
+    "qcom_ramdump",
+    "memlat",
+    "bwmon",
+    "c1dcvs_scmi_v2",
+    "mpam",
+    "mpam_game",
+    "cpufreq_stats_scmi_v2",
+    "dynpf_scmi",
+    "cpucp_log",
+    "sys_pm_vx",
+    "msm_performance",
+    "wcd_usbss_i2c",
+    "sysmon_subsystem_stats",
+    "cdsprm",
+    "fsa4480-i2c",
+    "adsp_sleepmon",
+    "adsp_loader_dlkm",
+    "panel_event_notifier",
+    "dmesg_dumper",
+    "health_monitor",
+    "qfprom-sys",
+    "oplus_mm_kevent",
+    "oplus_mm_kevent_fb",
+    "oplus_trackpoint_report",
+    "qti-fixed-regulator",
+    "qpnp-amoled-regulator",
+    "qti-ocp-notifier",
+    "oplus_camera_aw37004",
+    "hvc_gunyah",
+    "msm_geni_serial",
+    "rdbg",
+    "qcom_iommu_debug",
+    "drm_dp_aux_bus",
+    "drm_display_helper",
+    "lt9611uxc",
+    "oplus_bsp_fw_update",
+    "oplus_bsp_tp_notify",
+    "qseecom_proxy",
+    "aw8697",
+    "haptic",
+    "haptic_feedback",
+    "si_haptic",
+    "qcom-i2c-pmic",
+    "sg",
+    "spi-msm-geni",
+    "spmi-pmic-arb-debug",
+    "msm_sharedmem",
+    "phy-generic",
+    "phy-qcom-emu",
+    "phy-msm-ssusb-qmp",
+    "phy-msm-snps-eusb2",
+    "dwc3-msm",
+    "usb_f_rndis",
+    "f_fs_ipc_log",
+    "usb_f_cdev",
+    "usb_f_ccid",
+    "usb_f_qdss",
+    "usb_f_gsi",
+    "ucsi_glink",
+    "repeater",
+    "repeater-qti-pmic-eusb2",
+    "redriver",
+    "nb7vpq904m",
+    "pm8941-pwrkey",
+    "qcom-hv-haptics",
+    "i2c-msm-geni",
+    "i3c-master-msm-geni",
+    "qcom-dload-mode",
+    "qcom-pon",
+    "reboot-mode",
+    "ufcs_class",
+    "oplus_chg_v2",
+    "oplus_cfg",
+    "oplus_wireless_pen",
+    "qcom-spmi-temp-alarm",
+    "bcl_soc",
+    "qti_qmi_cdev",
+    "qti_qmi_sensor_v2",
+    "qti_cpufreq_cdev",
+    "qti_devfreq_cdev",
+    "cpu_voltage_cooling",
+    "ddr_cdev",
+    "qti_userspace_cdev",
+    "max31760_fan",
+    "msm_lmh_dcvs",
+    "thermal_config",
+    "gpu_dump_skip_cdev",
+    "qcom_edac",
+    "qcom-cpufreq-hw-debug",
+    "qcom_lpm",
+    "leds-qti-flash",
+    "leds-qti-tri-led",
+    "leds-qpnp-vibrator-ldo",
+    "leds-aw20198",
+    "qcom_pil_info",
+    "rproc_qcom_common",
+    "qcom_q6v5",
+    "qcom_q6v5_pas",
+    "qcom_spss",
+    "qcom_sysmon",
+    "qcom_glink",
+    "qcom_glink_smem",
+    "qcom_glink_spss",
+    "qcom_smd",
+    "glink_pkt",
+    "gh_ctrl",
+    "gh_irq_lend",
+    "gh_rm_booster",
+    "gh_mem_notifier",
+    "gh_panic_notifier",
+    "qcom-spmi-adc5-gen3",
+    "qcom-vadc-common",
+    "qti-glink-adc",
+    "nvmem_qfprom",
+    "slimbus",
+    "slim-qcom-ngd-ctrl",
+    "hwmon",
+    "qti_amoled_ecm",
+    "coresight",
+    "coresight-tmc",
+    "coresight-funnel",
+    "coresight-replicator",
+    "coresight-stm",
+    "coresight-cti",
+    "coresight-dummy",
+    "coresight-remote-etm",
+    "coresight-tmc-sec",
+    "coresight-trace-noc",
+    "coresight-tgu",
+    "coresight-hwevent",
+    "coresight-tpda",
+    "coresight-tpdm",
+    "coresight-csr",
+    "stm_core",
+    "stm_p_ost",
+    "stm_console",
+    "stm_heartbeat",
+    "stm_ftrace",
+    "snd-usb-audio-qmi",
+    "snd-soc-hdmi-codec",
+    "qrtr-smd",
+    "qrtr-mhi",
+    "horae_shell_temp",
+    "oplus_ak09970",
+    "oplus_bsp_dfr_fdleak_check",
+    "oplus_bsp_dfr_kmsg_wb",
+    "oplus_bsp_dfr_phoenix",
+    "oplus_bsp_dfr_reboot_speed",
+    "oplus_bsp_dfr_shutdown_speed",
+    "oplus_bsp_dfr_ubt",
+    "oplus_bsp_game_opt",
+    "oplus_bsp_hybridswap_zram",
+    "oplus_bsp_ist_down",
+    "oplus_bsp_ist_up",
+    "oplus_bsp_kswapd_opt",
+    "oplus_bsp_lz4k",
+    "oplus_bsp_memleak_detect_simple",
+    "oplus_bsp_midas",
+    "oplus_bsp_mxm_down",
+    "oplus_bsp_mxm_up",
+    "oplus_bsp_proactive_compact",
+    "oplus_bsp_sigkill_diagnosis",
+    "oplus_bsp_synaptics_tcm2",
+    "oplus_bsp_task_load",
+    "oplus_bsp_tp_common",
+    "oplus_bsp_tp_custom",
+    "oplus_bsp_tp_focal_common",
+    "oplus_bsp_tp_ft3518",
+    "oplus_bsp_tp_ft3658u_spi",
+    "oplus_bsp_tp_ft3681",
+    "oplus_bsp_tp_ft3683g",
+    "oplus_bsp_tp_novatek_common",
+    "oplus_bsp_tp_nt36532_noflash",
+    "oplus_bsp_tp_nt36672c_noflash",
+    "oplus_bsp_tp_syna_common",
+    "oplus_bsp_tp_tcm_S3910",
+    "oplus_bsp_tri_key",
+    "oplus_bsp_uff_fp_driver",
+    "oplus_bsp_zram_opt",
+    "oplus_bsp_zsmalloc",
+    "oplus_connectivity_routerboost",
+    "oplus_connectivity_sla",
+    "oplus_freqqos_monitor",
+    "oplus_ipa_thermal",
+    "oplus_locking_strategy",
+    "oplus_network_app_monitor",
+    "oplus_network_data_module",
+    "oplus_network_dns_hook",
+    "oplus_network_esim",
+    "oplus_network_game_first",
+    "oplus_network_linkpower_module",
+    "oplus_network_oem_qmi",
+    "oplus_network_qr_scan",
+    "oplus_network_rf_cable_monitor",
+    "oplus_network_satellite",
+    "oplus_network_satellite_rsmc",
+    "oplus_network_score",
+    "oplus_network_sim_detect",
+    "oplus_network_snapshot",
+    "oplus_network_stats_calc",
+    "oplus_network_tuning",
+    "oplus_network_vnet",
+    "oplus_secure_common",
+    "oplus_secure_guard",
+    "oplus_sensor_deviceinfo",
+    "oplus_sensor_feedback",
+    "oplus_sensor_interact",
+    "oplus_sensor_ir_core",
+    "oplus_sensor_kookong_ir_spi",
+    "oplus_sys_hans",
+    "oplus_sys_stability_helper",
+    "oplus_vip_binder",
+    "oplus_wificapcenter",
+    "oplus_wifi_wsa",
+    "thermal_pa_adc",
+    "smcinvoke_dlkm",
+    # The NXP NFC/eSE chip behind /dev/nq-nci. The stock recovery's
+    # modules.load.recovery omits these two (they are only in the full
+    # vendor_dlkm modules.load), so without them no eSE node exists at boot,
+    # secure_element-service.qti cannot register eSE1, the weaver and keymint
+    # wait on it forever and /data stays encrypted. OrangeFox loads them,
+    # which is why it decrypts. Verified on the phone: insmod of both makes
+    # /dev/nq-nci appear (crw-rw---- nfc nfc). After smcinvoke_dlkm, which
+    # they reference.
+    "stm_nfc_i2c",
+    "nxp-nci",
+    "msm_drm",
+    "msm_ext_display",
+    "sync_fence",
+    "msm_hw_fence",
+    "msm-mmrm",
+]
+
+# The key programs talk to the secure world through /dev/qseecom, which the
+# phone's own init opens to the drmrpc group (OrangeFox's
+# recovery/root/init.recovery.qcom.rc:40-41 does the same chmod and chown).
+# The phone's recovery has no /dev/qseecom: this kernel's secure world
+# is reached through /dev/smcinvoke. Naming a node the modules never make
+# waits 5 s and ends the bring-up, so this table stays out.
+# user = "system"
+# group = "drmrpc"
+# mode = 0o660
+# paths = ["/dev/qseecom"]
+
+[partitions]
+# The stock fstab mounts persist at /persist and /mnt/vendor/persist
+# (d-device-evidence.md).
+mounted = ["persist"]
+
+[firmware]
+# modem_a=sde6 is mounted as /firmware in recovery and as
+# /vendor/firmware_mnt in system (e-firmware-derived.md).
+partition = "modem"
+
+# Touch: the IC is a Synaptics S3910 (oplus_bsp_tp_custom...synaptics-s3910
+# in the command line), but OPPO's touch readiness runs through touchDaemon /
+# vendor.touch-aidl-1, not Xiaomi's touch_dev layer, so what a recovery has
+# to write has to be tried on the phone first. Left off; candidates below.
+# [touch]
+# writes = []
+
+# Haptics: lra_frequency_hz stays 0 in recovery (the richTap service
+# calibrates the motor through its own ioctl, not this node), but the
+# driver does report the resonant period in t_lra_us: 5882 us is 170 Hz,
+# the same frequency richTap calibrates to. Play Skyward's clicks and ticks
+# through the qcom-hv-haptics force-feedback device (/dev/input/event4).
+[haptics]
+resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
+period = "/sys/class/qcom-haptics/t_lra_us"
+strength = { lightest = 0.4, strongest = 1.0 }
+
+# WLAN: the stock recovery deliberately leaves cfg80211/mac80211 and the
+# WLAN stack out of its module list, so recovery has no WiFi by default.
+# Enabling [wlan] needs the chain below; the probe URL was not taken from
+# the phone, so the section stays out.
+# [wlan]
+# modules = ["cfg80211", "mac80211", "qca_cld3_kiwi_v2"]
+# writes = [
+#     { path = "/sys/kernel/icnss/wlan_en_delay", value = "1000" },
+#     { path = "/sys/kernel/icnss/wpss_boot", value = "1" },
+# ]
+# firmware = [{ name = "wlan/qca_cld/kiwi_v2/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/kiwi_v2/WCNSS_qcom_cfg.ini" }]
+# interface = "wlan0"
+# supplicant = "/vendor/bin/hw/wpa_supplicant"
+# libraries = ["/system/lib64", "/vendor/lib64"]
+# service = "android.hardware.wifi.supplicant.ISupplicant/default"
+# probe = ... # not taken from the phone; do not copy Xiaomi's
+
+# [update] stays out: realme's update protocol is not researched, and
+# without the section the update page hides itself (skyward/src/ui.rs:1548).
+
+# One-shot as root: /vendor/bin/ exists on the real phone. Whether this
+# script is the dispatcher the dada comment describes is still to be
+# verified on the phone.
+# The post_boot script this table used to start ends with status 1 on the phone,
+# and that ends the bring-up before the key programs start, so it stays out
+# until the script's own failure is understood.
+# [[service]]
+# path = "/vendor/bin/sh"
+# args = ["/vendor/bin/init.kernel.post_boot.sh"]
+# libraries = ["/system/lib64", "/vendor/lib64"]
+# oneshot = true
+# user = "root"
+# groups = ["root", "system", "wakelock", "graphics"]
+
+# Vibration: OrangeFox starts vendor.oplus.vibrator from
+# init.recovery.qcom.rc on twrp.modules.loaded=true, which a recovery that
+# is not OrangeFox never sets. Its richTap service calibrates the motor's
+# resonance (f0), then registers android.hardware.vibrator.IVibrator/default.
+# Without it lra_frequency_hz reads 0 and no waveform can be made. Start the
+# same service with the environment its own /odm/etc/init/vibrator-default.rc
+# gives it; libraries under /odm and /vendor are added by the starter.
+[[service]]
+path = "/odm/bin/hw/vendor.oplus.hardware.vibrator-service"
+libraries = ["/odm/lib64", "/vendor/lib64", "/mnt/system/system/lib64"]
+environment = [
+    ["RICHTAP_DEVICE_PATH", "/dev/awinic_haptic"],
+    ["ENV_RICHTAP_CONFIG_PATH", "/odm/etc/aac_richtap.config"],
+]
+user = "system"
+groups = ["system", "input"]
+
+[stock]
+version = "14.1.0.181"
+# The local full update package, an absolute path on the packer's host.
+package = "J:/RMX3800_14.1.0.181(CN01).zip"
+recovery = "0dcc9fe5bb0579c979bdbd1b8541c86a5343ef972a1711997ba3bab29382482e"

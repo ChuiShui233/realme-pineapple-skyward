@@ -56,7 +56,7 @@ impl Haptics {
     /// only as it is played.
     pub fn open(cfg: &skyward_config::Haptics) -> Result<Haptics> {
         let (path, dev) = motor()?;
-        let hz = resonance(&cfg.resonance)?;
+        let hz = resonance(&cfg.resonance, cfg.period.as_deref())?;
         let click = match cfg.click {
             Some(id) => {
                 eprintln!("haptics {}: clicks with waveform {id}, ticks made for a motor swinging at {hz} Hz", path.display());
@@ -149,13 +149,23 @@ fn takes_periodic(dev: &RawDevice) -> bool {
     dev.supported_ff().is_some_and(|ff| ff.contains(evdev::FFEffectCode::FF_PERIODIC))
 }
 
-/// The motor's resonant frequency in hertz, from the file the driver says
-/// it in, in tenths of a hertz.
-fn resonance(file: &str) -> Result<f32> {
+/// The motor's resonant frequency in hertz. The driver says it in `file`,
+/// in tenths of a hertz; some drivers leave that at 0 until they are
+/// calibrated but do report the resonant period in `period`, in microseconds,
+/// from which the frequency is one period's worth of hertz.
+fn resonance(file: &str, period: Option<&str>) -> Result<f32> {
     let text = fs::read_to_string(file).with_context(|| format!("read {file}"))?;
     let tenths: u32 = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{file} holds {text:?}"))?;
-    ensure!(tenths > 0, "{file} says the motor swings at 0 Hz");
-    Ok(tenths as f32 / 10.0)
+    if tenths > 0 {
+        return Ok(tenths as f32 / 10.0);
+    }
+    if let Some(period) = period {
+        let text = fs::read_to_string(period).with_context(|| format!("read {period}"))?;
+        let us: u32 = text.split_whitespace().next().and_then(|n| n.parse().ok()).with_context(|| format!("{period} holds {text:?}"))?;
+        ensure!(us > 0, "{period} says the motor's period is 0 us");
+        return Ok(1_000_000.0 / us as f32);
+    }
+    Err(anyhow!("{file} says the motor swings at 0 Hz"))
 }
 
 /// A click as the driver loaded it: the slot the kernel keeps it in, and

@@ -530,13 +530,31 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     {
         skyward_sys::kmsg(&format!("logd not started: {e:#}"))?;
     }
+    // A third-party recovery image brings its own service manager and its own
+    // SELinux policy. The phone's key services, started here under the
+    // recovery's context, register vendor-only extensions (such as the
+    // OPLUS weaver extension) whose labels that policy keeps enforcing.
+    // Turning enforcement off for the recovery's own lifetime lets those
+    // services start and the secure world hand over the keys that open
+    // /data. This changes only the running recovery, never the installed
+    // system, which reloads its own policy when it boots.
+    if let Err(e) = relax_selinux() {
+        skyward_sys::kmsg(&format!("could not relax SELinux: {e:#}"))?;
+    }
     let services: Vec<Started> = cfg.services.iter().filter(|s| s.runs_on(&props)).cloned().map(Started::from).collect();
     // The drivers ask for their firmware by name, and the kernel looks only
     // in folders of its own unless told to pass on what it does not find
     // there to ueventd, which looks in the recovery's firmware folders.
     std::fs::write(FIRMWARE_FALLBACK, "1").with_context(|| format!("write 1 to {FIRMWARE_FALLBACK}"))?;
-    if let Some(firmware) = &cfg.firmware {
-        mount_firmware(&firmware.partition)?;
+    if let Some(firmware) = &cfg.firmware
+        && let Err(e) = mount_firmware(&firmware.partition)
+    {
+        // A partition that will not mount must not end the bring-up: the
+        // modules and the screen still come up. The secure-world apps it
+        // holds are needed for /data, but whether that worked is decided
+        // later from the services themselves, not here. Note the reason and
+        // carry on, as for a device write.
+        skyward_sys::kmsg(&format!("firmware partition not mounted: {e:#}"))?;
     }
     for name in &cfg.partitions.mounted {
         let at = skyward_block::fstab::mount(name)?;
@@ -544,6 +562,27 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     }
     for path in load_modules(cfg, &cfg.modules.load)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
+    }
+    // What the phone's own description says to write once its firmware is
+    // mounted and its modules are loaded, in the order it says: on the GT6,
+    // restarting the ADSP whose power supply appears only then. A write
+    // that does not come to be is told to the kernel log; the recovery
+    // comes up without it and without a battery rather than not at all.
+    for write in &cfg.device.writes {
+        match write_device_file(write) {
+            Ok(()) => skyward_sys::kmsg(&format!("wrote {} to {}", write.value, write.path))?,
+            Err(e) => skyward_sys::kmsg(&format!("the device's own write of {} to {} did not happen: {e:#}", write.value, write.path))?,
+        }
+    }
+    // Where the phone's own description says how long the battery may take
+    // to appear after the writes, wait that long for it; a phone that
+    // names no writes names no wait, and loses no time.
+    if let Some(secs) = cfg.device.battery_wait_seconds {
+        let battery = Path::new("/sys/class/power_supply/battery");
+        match skyward_sys::wait_file(battery, std::time::Duration::from_secs(secs)) {
+            Ok(()) => skyward_sys::kmsg("the battery is there after the device's own writes")?,
+            Err(e) => skyward_sys::kmsg(&format!("the battery is not there: {e:#}"))?,
+        }
     }
     if !cfg.owners.is_empty() {
         let handed = hand_over(&cfg.owners)?;
@@ -606,6 +645,14 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
 /// either of which may come after the load of the module returns.
 #[cfg(target_os = "android")]
 const FILES_MADE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Write a device's own value to its file, once the file is there: as the
+/// phone's own init waits for a node its modules make before it writes it.
+#[cfg(target_os = "android")]
+fn write_device_file(write: &skyward_config::Write) -> Result<()> {
+    skyward_sys::wait_file(Path::new(&write.path), FILES_MADE).with_context(|| format!("wait for {}", write.path))?;
+    std::fs::write(&write.path, &write.value).with_context(|| format!("write {} to {}", write.value, write.path))
+}
 
 /// Give each file the phone's own init hands over as it boots to the
 /// account it names, with the mode it gives, as its chown and chmod lines
@@ -683,6 +730,28 @@ fn agree_on_the_notes_key(registered: &[String]) -> Result<()> {
 #[cfg(target_os = "android")]
 const NOBODY: u32 = u32::MAX;
 
+/// Where the kernel keeps the current SELinux enforcement mode. Writing "0"
+/// turns enforcement off (permissive), "1" back on.
+#[cfg(target_os = "android")]
+const SELINUX_ENFORCE: &str = "/sys/fs/selinux/enforce";
+
+/// Let the phone's own security services start under this recovery. A
+/// recovery built on another project's image carries a policy that keeps
+/// enforcing labels on vendor-only services; left as it is, those services
+/// abort while registering and the secure world never releases the keys.
+/// Permissive is the mode recoveries run in anyway, and lasts only until
+/// the installed system reloads its policy on the next boot.
+#[cfg(target_os = "android")]
+fn relax_selinux() -> anyhow::Result<()> {
+    let mode = std::fs::read_to_string(SELINUX_ENFORCE).unwrap_or_default();
+    if mode.trim() == "0" {
+        return Ok(());
+    }
+    std::fs::write(SELINUX_ENFORCE, "0").with_context(|| format!("turn off enforcement through {SELINUX_ENFORCE}"))?;
+    skyward_sys::kmsg("SELinux is permissive for this recovery")?;
+    Ok(())
+}
+
 /// The switch that has the kernel pass the firmware requests it cannot
 /// answer itself on to ueventd.
 #[cfg(target_os = "android")]
@@ -701,9 +770,39 @@ const FIRMWARE_SHOWN: &str = "/firmware";
 fn mount_firmware(partition: &str) -> Result<()> {
     let shown = Path::new(FIRMWARE_SHOWN);
     if skyward_block::mount::is_mount_point(shown)? {
+        // The phone's own init already mounted the firmware here. The secure
+        // world's loaders look for their apps under the table's mount point
+        // instead, so show the same tree there as well.
+        let at = skyward_block::fstab::partition(partition)?
+            .map(|e| std::path::PathBuf::from(&e.mount_point))
+            .unwrap_or_else(|| Path::new("/vendor/firmware_mnt").to_path_buf());
+        if !skyward_block::mount::is_mount_point(&at)? {
+            std::fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
+            skyward_block::mount::bind(shown, &at)?;
+            skyward_sys::kmsg(&format!("firmware already at {}, shown at {}", shown.display(), at.display()))?;
+        }
         return Ok(());
     }
-    let at = skyward_block::fstab::mount(partition)?;
+    // The phone's table mounts this FAT partition with an owner, an SELinux
+    // label and a restrictive fmask. A recovery's policy cannot apply that
+    // label, so the mount is refused with EINVAL; and where it is applied the
+    // restrictive mask hides the secure-world apps from the loaders that run
+    // as other users. Those apps only need to be read, so mount the same
+    // device read-only with everyone allowed to read, using the filesystem
+    // the table names. Try the table's own way first on other partitions.
+    let entry = skyward_block::fstab::partition(partition)?
+        .with_context(|| format!("the phone's table does not mount {partition}"))?;
+    let at = std::path::PathBuf::from(&entry.mount_point);
+    std::fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
+    let device = skyward_block::fstab::device(&entry)?;
+    let readable = ["ro".to_string(), "fmask=0000".to_string(), "dmask=0000".to_string()];
+    let at = match skyward_block::mount::mount(Path::new(&device), &at, &entry.filesystem, &readable) {
+        Ok(()) => at,
+        Err(e) => {
+            skyward_sys::kmsg(&format!("{partition} would not mount readably: {e:#}; mounting as its table says"))?;
+            skyward_block::fstab::mount(partition)?
+        }
+    };
     std::fs::create_dir_all(shown).with_context(|| format!("make {}", shown.display()))?;
     skyward_block::mount::bind(&at, shown)?;
     skyward_sys::kmsg(&format!("{partition} is mounted on {}, shown at {}", at.display(), shown.display()))

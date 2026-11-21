@@ -47,14 +47,15 @@ enum Through {
     Own(&'static str),
 }
 
-/// The makes of weaver, each by what the name of its program ends in, the
-/// longer endings first: Thales' and NXP's go through Android's secure
-/// element service, and Goodix's, whose program is named after no maker,
-/// through Goodix's own.
-const WEAVERS: [(&str, Through); 3] = [
+/// The makes of weaver, each by the suffix its program's name carries
+/// after the service's own name, the longer endings first: Thales' and
+/// NXP's go through Android's secure element service, and Goodix's, whose
+/// program is named after no maker, through Goodix's own.
+const WEAVERS: [(&str, Through); 4] = [
     (".thales", Through::ElementService),
     (".nxp-qti", Through::ElementService),
-    ("weaver-service", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse")),
+    (".nxp", Through::ElementService),
+    ("", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse")),
 ];
 
 /// Qualcomm's programs between Android and the secure world, by the names
@@ -119,9 +120,9 @@ pub struct Started {
 }
 
 impl From<Service> for Started {
-    /// A program init gives nothing besides what `service` says.
+    /// A program with whatever the configuration says init gives it.
     fn from(service: Service) -> Started {
-        Started { service, sockets: Vec::new(), environment: Vec::new(), anew: false }
+        Started { environment: service.environment.clone(), service, sockets: Vec::new(), anew: false }
     }
 }
 
@@ -233,19 +234,34 @@ pub fn programs(steps: &[Step]) -> Vec<&Started> {
         .collect()
 }
 
+/// What a weaver reaches its secure element through, by the name of its
+/// program's file: `android.hardware.weaver-service`, alone for Goodix's
+/// or with the suffix of its maker, `.thales`, `.nxp-qti` or `.nxp`, for
+/// one the maker names after itself. None names another program.
+fn weaver_through(file: &str) -> Option<Through> {
+    for (suffix, through) in WEAVERS {
+        if let Some(base) = file.strip_suffix(suffix)
+            && base == "android.hardware.weaver-service"
+        {
+            return Some(through);
+        }
+    }
+    None
+}
+
 /// What starting the weaver takes: what it reaches its secure element
 /// through, and then the weaver itself.
 fn weaver(phone: &Phone) -> Result<Vec<Step>> {
     let mut out = Vec::new();
-    let program = behind(phone, "the weaver", WEAVER, |file| file.contains("weaver-service"))?;
+    let program = behind(phone, "the weaver", WEAVER, |file| weaver_through(file).is_some())?;
     let file = file_name(program);
-    let (_, through) = WEAVERS.iter().find(|(ending, _)| file.ends_with(ending)).with_context(|| format!("{} is a weaver of a make the recovery does not know", program.path))?;
+    let through = weaver_through(file).with_context(|| format!("{} is a weaver of a make the recovery does not know", program.path))?;
     match through {
         Through::Own(interface) => {
             let own = phone
                 .services
                 .iter()
-                .find(|s| s.described.kind == Kind::Aidl && format!("{}.{}", s.described.package, s.described.interface) == *interface)
+                .find(|s| s.described.kind == Kind::Aidl && format!("{}.{}", s.described.package, s.described.interface) == interface)
                 .with_context(|| format!("{} goes through {interface}, which the phone does not describe", program.path))?;
             out.push(Step::Start(Box::new(element(phone, &own.described.name())?)));
         }
@@ -269,7 +285,7 @@ fn weaver(phone: &Phone) -> Result<Vec<Step>> {
         }
     }
     let mut weaver = started(phone, program, Ready::Service(WEAVER.into()), besides(phone, program, WEAVER, |_| false));
-    weaver.anew = *through == Through::ElementService;
+    weaver.anew = through == Through::ElementService;
     out.push(Step::Start(Box::new(weaver)));
     Ok(out)
 }
@@ -388,6 +404,7 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         path: phone.started_from(&program.path),
         args: program.args.clone(),
         libraries: libraries_of(&program.path, phone.bundle.as_deref()),
+        environment: Vec::new(),
         oneshot: false,
         ready_property,
         ready_service,
@@ -399,4 +416,26 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         capabilities: program.capabilities.clone().unwrap_or_default(),
     };
     Started { service, sockets: program.sockets.clone(), environment: program.environment.clone(), anew: false }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_weaver_is_named_after_its_service_with_or_without_its_makers_suffix() {
+        let goodix = Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse");
+        assert_eq!(weaver_through("android.hardware.weaver-service"), Some(goodix), "Goodix's, named after no maker");
+        assert_eq!(weaver_through("android.hardware.weaver-service.nxp"), Some(Through::ElementService), "realme's NXP weaver");
+        assert_eq!(weaver_through("android.hardware.weaver-service.nxp-qti"), Some(Through::ElementService), "the NXP weaver of a Qualcomm build");
+        assert_eq!(weaver_through("android.hardware.weaver-service.thales"), Some(Through::ElementService), "Thales' weaver");
+        for other in [
+            "android.hardware.weaver-service-other",
+            "foo-weaver-servicex",
+            "android.hardware.weaver-service.nxp-qti-extra",
+            "android.hardware.secure_element-service",
+        ] {
+            assert_eq!(weaver_through(other), None, "{other} is no weaver");
+        }
+    }
 }
