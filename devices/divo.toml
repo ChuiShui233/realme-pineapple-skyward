@@ -514,21 +514,14 @@ resonance = "/sys/class/qcom-haptics/lra_frequency_hz"
 period = "/sys/class/qcom-haptics/t_lra_us"
 strength = { lightest = 0.4, strongest = 1.0 }
 
-# The modem, which the bootloader leaves offline in a recovery and which the
-# WLAN driver needs: cnss2 asks the modem's QMI services for the chip's
-# firmware and calibration, and without them it retries waiting for QMI and
-# never makes wlan0. The phone's own init starts both; remoteproc1 is the
-# modem (mss) and remoteproc0 the audio DSP, which comes up with it. This is
-# the same one-shot the Ace 6 port runs.
-[[service]]
-path = "/system/bin/sh"
-args = [
-    "-c",
-    "echo start > /sys/class/remoteproc/remoteproc1/state; echo start > /sys/class/remoteproc/remoteproc0/state; sleep 6",
-]
-oneshot = true
-user = "root"
-groups = ["root"]
+# The modem (mss) is NOT started here, unlike the Ace 6 port. On this phone
+# the recovery's own init powers up both remoteproc0 (audio DSP) and
+# remoteproc1 (modem) during bring-up, before this recovery's programs run:
+# the log shows "remoteproc1: ...mss is now up" ahead of any service here.
+# Writing "start" again to an already-running modem makes its firmware stall:
+# cnss then cannot get the DMS QMI service and the modem's DOG watchdog
+# fires "stalled initialization", which with rproc recovery disabled crashes
+# the whole device. So the one-shot the Ace 6 needs is left out on this phone.
 
 # WLAN: Qualcomm's Kiwi on PCIe, driven by qca_cld3_kiwi_v2 over the cnss2
 # platform driver. This is the verified chain from the Ace 6 port, whose
