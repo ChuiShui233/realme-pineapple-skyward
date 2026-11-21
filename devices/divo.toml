@@ -548,7 +548,14 @@ firmware = [
 ]
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
-libraries = ["/system/lib64", "/vendor/lib64"]
+# The phone built wpa_supplicant against the full OpenSSL 1.1 libcrypto,
+# which exports the old "sk_dup" symbol. The ramdisk's /system/lib64 copy is
+# a newer BoringSSL that only has "OPENSSL_sk_dup", so a wpa started with
+# /system/lib64 first fails to link: "cannot locate symbol sk_dup". The
+# system partition's own copy at /mnt/system/system/lib64 (mounted by the
+# decryption chain) does export "sk_dup". Put it first so the supplicant
+# loads that one; /vendor/lib64 carries the OPLUS/QTI WiFi NDK libraries.
+libraries = ["/mnt/system/system/lib64", "/vendor/lib64", "/system/lib64"]
 service = "android.hardware.wifi.supplicant.ISupplicant/default"
 probe = "http://connect.rom.miui.com/generate_204"
 
